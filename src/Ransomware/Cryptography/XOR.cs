@@ -39,7 +39,7 @@ internal static class XOR
 
         if (data.Length >= vectorSize)
         {
-            Vector<byte> keyVector = new Vector<byte>(key);
+            Vector<byte> keyVector = new(key);
             int alignedLength = data.Length - (data.Length % vectorSize);
 
             Span<byte> sourceSpan = data;
